@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  postgres_primary:
+    image: postgres:14-alpine
+    user: postgres
+    restart: always
+    healthcheck:
+      test: 'pg_isready -U user --dbname=postgres'
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    ports:
+      - ${PORT_PRIMARY}:5432
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASS}
+
+      REPLICA_USER: ${REPLICA_USER}
+      REPLICA_PASS: ${REPLICA_PASS}
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256\nhost replication all 0.0.0.0/0 md5"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./config-primary.sh:/docker-entrypoint-initdb.d/config-primary.sh
+    command: |
+      postgres 
+      -c wal_level=replica 
+      -c hot_standby=on 
+      -c max_wal_senders=10 
+      -c max_replication_slots=10 
+      -c hot_standby_feedback=on
+      
+
+  postgres_replica:
+    image: postgres:14-alpine
+    user: postgres
+    restart: always
+    ports:
+      - ${PORT_REPLICATE}:5432
+    environment:
+      PGUSER: ${REPLICA_USER}
+      PGPASSWORD: ${REPLICA_PASS}
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+    depends_on:
+      postgres_primary:
+        condition: service_healthy
+    command: |
+      bash -c "
+      until pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot --host=postgres_primary --port=5432
+      do
+      echo 'Waiting for primary to connect...'
+      sleep 1s
+      done
+      echo 'Backup done, starting replica...'
+      chmod 0700 /var/lib/postgresql/data
+      postgres -c recovery_min_apply_delay='${RECOVERY_MIN_APPLY_DELAY}'
+      "
+
+volumes:
+  postgres_primary_data:
+  postgres_replica_data:
